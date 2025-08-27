@@ -1,32 +1,44 @@
-import { handleCheckoutSessionCompleted } from "@/lib/stripe/handleCheckoutSessionCompleted";
-import { stripe } from "@/lib/stripe/stripe";
-import { headers } from "next/headers";
-import { NextResponse } from "next/server";
+import { getAppUrl } from "@/lib/helper";
+import prisma from "@/lib/prisma";
+import { WorkflowStatus } from "@/lib/types";
+import { NextRequest } from "next/server";
 
-export async function POST(request: Request) {
-  const body = await request.text();
+export async function GET(request: NextRequest) {
+  const now = new Date();
 
-  const signatureHeaders = headers().get("stripe-signature") as string;
-
-  try {
-    const event = stripe.webhooks.constructEvent(
-      body,
-      signatureHeaders,
-      process.env.STRIPE_WEBHOOK_SECRET!
-    );
-
-    switch (event.type) {
-      case "checkout.session.completed":
-        handleCheckoutSessionCompleted(event.data.object);
-        break;
-
-      default:
-        break;
-    }
-
-    return new NextResponse(null, { status: 200 });
-  } catch (error) {
-    console.error("Stripe webhook error", error);
-    return new NextResponse("webhook error", { status: 400 });
+  const workflows = await prisma.workflow.findMany({
+    select: {
+      id: true,
+    },
+    where: {
+      status: WorkflowStatus.PUBLISHED,
+      cron: { not: null },
+      nextRunAt: {
+        lte: now,
+      },
+    },
+  });
+  for (const workflow of workflows) {
+    triggerWorkflow(workflow.id);
   }
+  return Response.json({ workflowsToRun: workflows.length }, { status: 200 });
+}
+
+function triggerWorkflow(wofkflowId: string) {
+  const triggerApiUrl = getAppUrl(
+    `api/workflows/execute?workflowId=${wofkflowId}`
+  );
+  fetch(triggerApiUrl, {
+    headers: {
+      Authorization: `Bearer ${process.env.API_SECRET!}`,
+    },
+    cache: "no-store",
+  }).catch((error: any) => {
+    console.error(
+      "Error triggering workflow with id",
+      wofkflowId,
+      ":error->",
+      error.message
+    );
+  });
 }
